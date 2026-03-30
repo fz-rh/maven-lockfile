@@ -17,6 +17,8 @@ import io.github.chains_project.maven_lockfile.graph.DependencyGraph;
 import io.github.chains_project.maven_lockfile.reporting.PluginLogManager;
 import io.github.chains_project.maven_lockfile.resolvers.BomResolver;
 import io.github.chains_project.maven_lockfile.resolvers.ProjectBuilder;
+import java.nio.file.Path;
+import java.util.*;
 import org.apache.maven.artifact.Artifact;
 import org.apache.maven.artifact.DefaultArtifact;
 import org.apache.maven.artifact.repository.ArtifactRepository;
@@ -32,9 +34,6 @@ import org.apache.maven.shared.dependency.graph.DependencyCollectorBuilder;
 import org.apache.maven.shared.dependency.graph.DependencyCollectorBuilderException;
 import org.apache.maven.shared.dependency.graph.DependencyNode;
 import org.apache.maven.shared.dependency.graph.traversal.DependencyNodeVisitor;
-
-import java.nio.file.Path;
-import java.util.*;
 
 /**
  * Entry point for the lock file generation. This class is responsible for generating the lock file for a project.
@@ -125,7 +124,11 @@ public class LockFileFacade {
                 boms);
     }
 
-    private static void resolveParentPomsForDependencies(DependencyGraph graph, MavenSession session, MavenProject project, AbstractChecksumCalculator checksumCalculator) {
+    private static void resolveParentPomsForDependencies(
+            DependencyGraph graph,
+            MavenSession session,
+            MavenProject project,
+            AbstractChecksumCalculator checksumCalculator) {
         ProjectBuilder builder = new ProjectBuilder(session, project.getRemoteArtifactRepositories());
         graph.getDependencySet().stream().forEach(node -> {
             var projectOptional = builder.buildFromGav(
@@ -133,10 +136,10 @@ public class LockFileFacade {
                     node.getArtifactId().getValue(),
                     node.getVersion().getValue());
 
-            if(projectOptional.isPresent()) {
+            if (projectOptional.isPresent()) {
                 var projectDep = projectOptional.get();
 
-                if(projectDep.hasParent()) {
+                if (projectDep.hasParent()) {
                     PluginLogManager.getLog().debug(String.format("Writing parent POM for %s", node));
                     var pom = constructRecursivePom(projectDep.getParent(), session, checksumCalculator);
                     node.setParentPom(pom);
@@ -242,7 +245,8 @@ public class LockFileFacade {
                     : 0;
             PluginLogManager.getLog()
                     .debug(String.format(
-                            "Built plugin project %s with %d declared dependencies", pluginProject.getArtifact(), declaredDeps));
+                            "Built plugin project %s with %d declared dependencies",
+                            pluginProject.getArtifact(), declaredDeps));
 
             // Merge user-declared dependencies into the plugin project
             // User-declared dependencies override the plugin's default dependencies (e.g., scope changes)
@@ -267,7 +271,8 @@ public class LockFileFacade {
                     } else {
                         PluginLogManager.getLog()
                                 .debug(String.format(
-                                        "Adding user-declared dependency %s to plugin %s", key, pluginProject.getArtifact()));
+                                        "Adding user-declared dependency %s to plugin %s",
+                                        key, pluginProject.getArtifact()));
                     }
                     pluginDeps.add(userDep);
                 }
@@ -297,12 +302,15 @@ public class LockFileFacade {
             // Get root dependency nodes (excluding the plugin project itself)
             Set<io.github.chains_project.maven_lockfile.graph.DependencyNode> roots = dependencyGraph.getRoots();
             PluginLogManager.getLog()
-                    .info(String.format("Resolved %4d dependencies for plugin %s", roots.size(), pluginProject.getArtifact()));
+                    .info(String.format(
+                            "Resolved %4d dependencies for plugin %s", roots.size(), pluginProject.getArtifact()));
             return roots;
 
         } catch (Exception e) {
             PluginLogManager.getLog()
-                    .warn(String.format("Could not resolve dependencies for plugin %s", pluginProject.getArtifact()), e);
+                    .warn(
+                            String.format("Could not resolve dependencies for plugin %s", pluginProject.getArtifact()),
+                            e);
             return Collections.emptySet();
         }
     }
@@ -337,8 +345,7 @@ public class LockFileFacade {
             buildingRequest.setProject(project);
             buildingRequest.setRemoteRepositories(repositories);
 
-            DependencyNode rootNode =
-                    dependencyCollectorBuilder.collectDependencyGraph(buildingRequest, filter);
+            DependencyNode rootNode = dependencyCollectorBuilder.collectDependencyGraph(buildingRequest, filter);
 
             MutableGraph<DependencyNode> graph = GraphBuilder.directed().build();
             rootNode.accept(new GraphBuildingNodeVisitor(graph));
@@ -363,7 +370,8 @@ public class LockFileFacade {
             MavenProject initialProject, MavenSession session, AbstractChecksumCalculator checksumCalculator) {
         String checksumAlgorithm = checksumCalculator.getChecksumAlgorithm();
 
-        BomResolver bomResolver = new BomResolver(session, initialProject.getRemoteArtifactRepositories(), checksumCalculator);
+        BomResolver bomResolver =
+                new BomResolver(session, initialProject.getRemoteArtifactRepositories(), checksumCalculator);
         List<MavenProject> recursiveProjects = new ArrayList<>();
         MavenProject currentProject = initialProject;
         recursiveProjects.add(currentProject);
@@ -416,7 +424,7 @@ public class LockFileFacade {
                     checksumAlgorithm,
                     checksum,
                     lastPom);
-            if(boms.size() > 0) {
+            if (boms.size() > 0) {
                 lastPom.setBoms(boms);
             }
         }
