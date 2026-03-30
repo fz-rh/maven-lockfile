@@ -8,7 +8,7 @@
     "version": "1",
     "relativePath": "pom.xml",
     "checksumAlgorithm": "SHA-256",
-    "checksum": "7f9c1e99beb6150920c5ef2927fd2b308d81cf995e0630d765a6c19d0cfd9513"
+    "checksum": "c129344bb93be70590059056fa271d456680fa764d43b8c7a07070cd46bce2a7"
   },
   "lockFileVersion": 1,
   "dependencies": [
@@ -1694,7 +1694,7 @@
       "allowEnvironmentalValidationFailure": false,
       "includeEnvironment": true,
       "reduced": false,
-      "mavenLockfileVersion": "5.14.3-SNAPSHOT",
+      "mavenLockfileVersion": "5.14.4-SNAPSHOT",
       "checksumMode": "local",
       "checksumAlgorithm": "SHA-256"
     }
