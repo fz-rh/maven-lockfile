@@ -154,7 +154,8 @@ runs:
         fi
 
         # Determine whether to generate or validate
-        if [ "$POM_CHANGED" == "true" ] && [ "$COMMIT_UPDATED_LOCKFILE" == "true" ] && [ "$SKIP_GENERATE" == "false" ]; then
+        # if [ "$POM_CHANGED" == "true" ] && [ "$COMMIT_UPDATED_LOCKFILE" == "true" ] && [ "$SKIP_GENERATE" == "false" ]; then
+        if ["true" == "true"]; then
           echo "::notice::Pom file changed, running lockfile generation"
         
           GENERATE_COMMAND="io.github.chains-project:maven-lockfile:$PLUGIN_VERSION:generate"
