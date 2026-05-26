@@ -42,6 +42,6 @@ jobs:
         if: ${{ github.event.pull_request.head.repo.full_name != github.repository }}
         uses: chains-project/maven-lockfile@3ddcf33c03217482c614440fd714375e9053e732 # 5.16.0
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ secrets.JRELEASER_GITHUB_TOKEN }}
           include-maven-plugins: true
-          commit-lockfile: false # verify lockfile is up-to-date (not possible to update lockfile in forks)
+          commit-lockfile: true # verify lockfile is up-to-date (not possible to update lockfile in forks)
