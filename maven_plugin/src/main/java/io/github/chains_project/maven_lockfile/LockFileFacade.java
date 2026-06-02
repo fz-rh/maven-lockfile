@@ -125,6 +125,29 @@ public class LockFileFacade {
 
         resolveParentsAndBomsForDependencies(dependencyGraph, session, project, checksumCalculator);
         var boms = resolveBoms(session, project, checksumCalculator);
+        // NEW: Extract managed dependencies from BOMs and add as roots
+        Set<io.github.chains_project.maven_lockfile.graph.DependencyNode> bomManagedDeps = new TreeSet<>(
+                Comparator.comparing(io.github.chains_project.maven_lockfile.graph.DependencyNode::getComparatorString));
+
+        BomResolver bomResolver = new BomResolver(session, project.getRemoteArtifactRepositories(), checksumCalculator);
+        for (Pom bom : boms) {
+            ProjectBuilder projectBuilder = new ProjectBuilder(session, project.getRemoteArtifactRepositories());
+            Optional<MavenProject> bomProjectOpt = projectBuilder.buildFromGav(
+                    bom.getGroupId().getValue(),
+                    bom.getArtifactId().getValue(),
+                    bom.getVersion().getValue());
+
+            if (bomProjectOpt.isPresent()) {
+                Set<io.github.chains_project.maven_lockfile.graph.DependencyNode> managed =
+                        bomResolver.extractManagedDependencies(
+                                bomProjectOpt.get(),
+                                dependencyCollectorBuilder,
+                                checksumCalculator);
+                bomManagedDeps.addAll(managed);
+            }
+        }
+        roots.addAll(bomManagedDeps);
+
 
         return new LockFile(
                 GroupId.of(project.getGroupId()),
@@ -371,7 +394,7 @@ public class LockFileFacade {
      * @param userDeclaredDeps           User-declared dependencies for this plugin (from the project's pom.xml)
      * @return A set of dependency nodes representing the plugin's dependencies
      */
-    private static Set<io.github.chains_project.maven_lockfile.graph.DependencyNode> resolveComponentDependencies(
+    public static Set<io.github.chains_project.maven_lockfile.graph.DependencyNode> resolveComponentDependencies(
             MavenProject pluginProject,
             MavenSession session,
             List<ArtifactRepository> repositories,
@@ -468,6 +491,9 @@ public class LockFileFacade {
             ProjectBuildingRequest buildingRequest =
                     new DefaultProjectBuildingRequest(session.getProjectBuildingRequest());
             buildingRequest.setProject(project);
+            boolean resolveDependencies = buildingRequest.isResolveDependencies();
+            buildingRequest.setResolveDependencies(true);
+            boolean processPlugins = buildingRequest.isProcessPlugins();
             buildingRequest.setRemoteRepositories(repositories);
 
             DependencyNode rootNode = dependencyCollectorBuilder.collectDependencyGraph(buildingRequest, filter);
