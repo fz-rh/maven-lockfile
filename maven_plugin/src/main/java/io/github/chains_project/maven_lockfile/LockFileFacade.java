@@ -12,9 +12,11 @@ import io.github.chains_project.maven_lockfile.resolvers.ProjectBuilder;
 import java.nio.file.Path;
 import java.util.*;
 import java.util.stream.Collectors;
+import java.util.stream.StreamSupport;
 import org.apache.maven.artifact.Artifact;
 import org.apache.maven.artifact.DefaultArtifact;
 import org.apache.maven.artifact.handler.DefaultArtifactHandler;
+import org.apache.maven.artifact.repository.ArtifactRepository;
 import org.apache.maven.artifact.resolver.filter.ArtifactFilter;
 import org.apache.maven.artifact.resolver.filter.ScopeArtifactFilter;
 import org.apache.maven.execution.MavenSession;
@@ -25,6 +27,7 @@ import org.apache.maven.project.DefaultProjectBuildingRequest;
 import org.apache.maven.project.MavenProject;
 import org.apache.maven.project.ProjectBuildingRequest;
 import org.apache.maven.shared.dependency.graph.DependencyCollectorBuilder;
+import org.apache.maven.shared.dependency.graph.DependencyCollectorBuilderException;
 import org.apache.maven.shared.dependency.graph.DependencyNode;
 import org.apache.maven.shared.dependency.graph.traversal.DependencyNodeVisitor;
 import org.eclipse.aether.RepositorySystem;
@@ -39,24 +42,39 @@ import org.eclipse.aether.util.artifact.JavaScopes;
  *
  */
 public class LockFileFacade {
-
     /**
      * This visitor is used to traverse the dependency graph and add the edges to the graph.
      */
     private static final class GraphBuildingNodeVisitor implements DependencyNodeVisitor {
         private final MutableGraph<DependencyNode> graph;
+        private final MavenProject project;
 
         /**
          * Create a new instance of the visitor.
          *
          * @param graph The graph to add the edges to.
+         * @param project The project to resolve the dependencies for.
+         *                This is useful to resolve `RELEASE` and `LATEST` versions, which are not resolved
+         *                by dependency collector.
          */
-        private GraphBuildingNodeVisitor(MutableGraph<DependencyNode> graph) {
+        private GraphBuildingNodeVisitor(MutableGraph<DependencyNode> graph, MavenProject project) {
             this.graph = graph;
+            this.project = project;
         }
 
         @Override
         public boolean visit(DependencyNode node) {
+            String version = node.getArtifact().getVersion();
+            if (isSpecialVersion(version)) {
+                project.getArtifacts().stream()
+                        .filter(a -> a.getDependencyConflictId()
+                                .equals(node.getArtifact().getDependencyConflictId()))
+                        .findFirst()
+                        .ifPresent(resolved -> {
+                            node.getArtifact().setVersion(resolved.getVersion());
+                            node.getArtifact().setFile(resolved.getFile());
+                        });
+            }
             node.getChildren().forEach(v -> graph.putEdge(node, v));
             return true;
         }
@@ -100,27 +118,35 @@ public class LockFileFacade {
             MetaData metadata,
             RepositorySystem repositorySystem) {
         PluginLogManager.getLog().info(String.format("Generating lock file for project %s", project.getArtifactId()));
+        Config config = metadata.getConfig();
         Set<MavenPlugin> plugins = new TreeSet<>();
-        if (metadata.getConfig().isIncludeMavenPlugins()) {
-            plugins = getAllPlugins(project, session, dependencyCollectorBuilder, checksumCalculator);
+        if (config.isIncludeMavenPlugins()) {
+            plugins = getAllPlugins(project, session, dependencyCollectorBuilder, checksumCalculator, config);
         }
 
-        Set<MavenExtension> extensions =
-                getAllExtensions(project, session, dependencyCollectorBuilder, checksumCalculator, repositorySystem);
+        Set<MavenExtension> extensions = new TreeSet<>();
+        if (config.isIncludeMavenExtensions()) {
+            extensions = getAllExtensions(
+                    project, session, dependencyCollectorBuilder, checksumCalculator, repositorySystem, config);
+        }
 
         // Get all the artifacts for the dependencies in the project
-        var graph = LockFileFacade.graph(
-                session,
+        DependencyGraph dependencyGraph = createDependencyGraph(
                 project,
+                session,
+                project.getRemoteArtifactRepositories(),
                 dependencyCollectorBuilder,
                 checksumCalculator,
-                metadata.getConfig().isReduced());
-        var roots = graph.getGraph().stream()
-                .filter(v -> v.getParent() == null)
-                .collect(Collectors.toCollection(() -> new TreeSet<>(Comparator.comparing(
-                        io.github.chains_project.maven_lockfile.graph.DependencyNode::getComparatorString))));
-        var pom = constructRecursivePom(project, checksumCalculator);
-        var boms = resolveBoms(graph, session, project, checksumCalculator);
+                null,
+                config.isReduced());
+
+        var roots = dependencyGraph.getRoots();
+        var pom = constructRecursivePom(project, session, checksumCalculator);
+
+        if (config.isIncludeParentPom() || config.isIncludeBoms()) {
+            resolveParentsAndBomsForDependencies(dependencyGraph, session, project, checksumCalculator);
+        }
+        Set<Pom> boms = config.isIncludeBoms() ? resolveBoms(session, project, checksumCalculator) : new TreeSet<>();
 
         return new LockFile(
                 GroupId.of(project.getGroupId()),
@@ -139,7 +165,8 @@ public class LockFileFacade {
             MavenSession session,
             DependencyCollectorBuilder dependencyCollectorBuilder,
             AbstractChecksumCalculator checksumCalculator,
-            RepositorySystem repositorySystem) {
+            RepositorySystem repositorySystem,
+            Config config) {
         Set<MavenExtension> extensions = new TreeSet<>();
 
         List<Extension> buildExtensions = project.getBuildExtensions();
@@ -164,6 +191,8 @@ public class LockFileFacade {
         DependencyRequest dependencyRequest = new DependencyRequest();
         dependencyRequest.setCollectRequest(collectRequest);
 
+        ProjectBuilder extensionProjectBuilder = new ProjectBuilder(session, project.getPluginArtifactRepositories());
+
         try {
             DependencyResult dependencyResult = repositorySystem.resolveDependencies(repoSession, dependencyRequest);
 
@@ -185,15 +214,19 @@ public class LockFileFacade {
 
                 RepositoryInformation repositoryInformation = checksumCalculator.getPluginResolvedField(mavenArtifact);
 
+                Optional<MavenProject> extensionProjectOptional = extensionProjectBuilder.buildFromGav(
+                        artifact.getGroupId(), artifact.getArtifactId(), artifact.getVersion());
+
                 // Resolve extension's transitive dependencies using the existing mechanism
                 Set<io.github.chains_project.maven_lockfile.graph.DependencyNode> transitiveDeps =
                         resolveComponentDependencies(
-                                mavenArtifact,
+                                extensionProjectOptional.get(),
                                 session,
-                                project,
+                                project.getPluginArtifactRepositories(),
                                 dependencyCollectorBuilder,
                                 checksumCalculator,
-                                Collections.emptyList());
+                                Collections.emptyList(),
+                                config);
 
                 extensions.add(new MavenExtension(
                         GroupId.of(artifact.getGroupId()),
@@ -218,11 +251,12 @@ public class LockFileFacade {
             RepositorySystemSession repoSession,
             List<RemoteRepository> repositories) {
         String version = extension.getVersion();
-        if (version == null || version.isBlank()) {
+        if (version == null || version.isBlank() || isSpecialVersion(version)) {
+            String requestedVersion = (version == null || version.isBlank()) ? "RELEASE" : version;
             try {
                 VersionRequest request = new VersionRequest(
                         new org.eclipse.aether.artifact.DefaultArtifact(
-                                extension.getGroupId(), extension.getArtifactId(), "jar", "RELEASE"),
+                                extension.getGroupId(), extension.getArtifactId(), "jar", requestedVersion),
                         repositories,
                         null);
                 version = repositorySystem.resolveVersion(repoSession, request).getVersion();
@@ -243,11 +277,52 @@ public class LockFileFacade {
         return Optional.of(new org.eclipse.aether.graph.Dependency(artifact, JavaScopes.RUNTIME));
     }
 
+    private static void resolveParentsAndBomsForDependencies(
+            DependencyGraph graph,
+            MavenSession session,
+            MavenProject rootProject,
+            AbstractChecksumCalculator checksumCalculator) {
+        ProjectBuilder builder = new ProjectBuilder(session, rootProject.getRemoteArtifactRepositories());
+        BomResolver bomResolver =
+                new BomResolver(session, rootProject.getRemoteArtifactRepositories(), checksumCalculator);
+
+        graph.getDependencySet().forEach(node -> {
+            var projectOptional = builder.buildFromGav(
+                    node.getGroupId().getValue(),
+                    node.getArtifactId().getValue(),
+                    node.getVersion().getValue());
+
+            if (projectOptional.isEmpty()) {
+                PluginLogManager.getLog()
+                        .warn(String.format(
+                                "Could not build project for dependency %s. Skipping parent and BOM resolution.",
+                                node));
+                return;
+            }
+            var mavenProject = projectOptional.get();
+
+            if (mavenProject.hasParent()) {
+                PluginLogManager.getLog().debug(String.format("Writting parent POM for dependency %s", node));
+
+                // Optimization, not to resolve parent if already resolved
+                // It has to be written in full form before lockfile v2
+                Pom pom = constructRecursivePom(mavenProject.getParent(), session, checksumCalculator);
+                node.setParentPom(pom);
+            }
+
+            Set<Pom> boms = bomResolver.resolveForProject(mavenProject);
+            if (!boms.isEmpty()) {
+                node.setBoms(boms);
+            }
+        });
+    }
+
     private static Set<MavenPlugin> getAllPlugins(
             MavenProject project,
             MavenSession session,
             DependencyCollectorBuilder dependencyCollectorBuilder,
-            AbstractChecksumCalculator checksumCalculator) {
+            AbstractChecksumCalculator checksumCalculator,
+            Config config) {
         Set<MavenPlugin> plugins = new TreeSet<>();
 
         // Build a map of user-declared plugin dependencies
@@ -262,20 +337,34 @@ public class LockFileFacade {
                 }
             }
         }
+        ProjectBuilder projectBuilder = new ProjectBuilder(session, project.getPluginArtifactRepositories());
 
         for (Artifact pluginArtifact : project.getPluginArtifacts()) {
             RepositoryInformation repositoryInformation = checksumCalculator.getPluginResolvedField(pluginArtifact);
             String pluginKey = pluginArtifact.getGroupId() + ":" + pluginArtifact.getArtifactId();
             List<Dependency> userDeclaredDeps = userPluginDependencies.getOrDefault(pluginKey, Collections.emptyList());
 
+            Optional<MavenProject> pluginProjectOptional = projectBuilder.buildFromGav(
+                    pluginArtifact.getGroupId(), pluginArtifact.getArtifactId(), pluginArtifact.getBaseVersion());
+
+            if (pluginProjectOptional.isEmpty()) {
+                PluginLogManager.getLog().warn(String.format("Could not build project for plugin %s", pluginArtifact));
+                continue;
+            }
+            MavenProject pluginProject = pluginProjectOptional.get();
+
             Set<io.github.chains_project.maven_lockfile.graph.DependencyNode> pluginDependencies =
                     resolveComponentDependencies(
-                            pluginArtifact,
+                            pluginProject,
                             session,
-                            project,
+                            project.getPluginArtifactRepositories(),
                             dependencyCollectorBuilder,
                             checksumCalculator,
-                            userDeclaredDeps);
+                            userDeclaredDeps,
+                            config);
+
+            Pom parent = resolvePluginParents(pluginProject, session, checksumCalculator);
+
             plugins.add(new MavenPlugin(
                     GroupId.of(pluginArtifact.getGroupId()),
                     ArtifactId.of(pluginArtifact.getArtifactId()),
@@ -284,49 +373,50 @@ public class LockFileFacade {
                     repositoryInformation.getRepositoryId(),
                     checksumCalculator.getChecksumAlgorithm(),
                     checksumCalculator.calculatePluginChecksum(pluginArtifact),
-                    pluginDependencies));
+                    pluginDependencies,
+                    parent));
         }
         return plugins;
+    }
+
+    private static Pom resolvePluginParents(
+            MavenProject pluginProject, MavenSession session, AbstractChecksumCalculator checksumCalculator) {
+        if (!pluginProject.hasParent()) {
+            return null;
+        }
+        return constructRecursivePom(pluginProject.getParent(), session, checksumCalculator);
     }
 
     /**
      * Resolve the dependencies of a Maven plugin.
      *
-     * @param pluginArtifact             The plugin artifact to resolve dependencies for
+     * @param pluginProject              The plugin project to resolve dependencies for
      * @param session                    The Maven session
-     * @param project                    The current Maven project (for repository configuration)
+     * @param repositories               The repositories to use for resolving dependencies
      * @param dependencyCollectorBuilder The dependency collector builder
      * @param checksumCalculator         The checksum calculator
      * @param userDeclaredDeps           User-declared dependencies for this plugin (from the project's pom.xml)
      * @return A set of dependency nodes representing the plugin's dependencies
      */
     private static Set<io.github.chains_project.maven_lockfile.graph.DependencyNode> resolveComponentDependencies(
-            Artifact pluginArtifact,
+            MavenProject pluginProject,
             MavenSession session,
-            MavenProject project,
+            List<ArtifactRepository> repositories,
             DependencyCollectorBuilder dependencyCollectorBuilder,
             AbstractChecksumCalculator checksumCalculator,
-            List<Dependency> userDeclaredDeps) {
+            List<Dependency> userDeclaredDeps,
+            Config config) {
         PluginLogManager.getLog()
-                .debug(String.format("Attempting to resolve dependencies for plugin %s", pluginArtifact));
+                .debug(String.format("Attempting to resolve dependencies for plugin %s", pluginProject.getArtifact()));
         try {
-            ProjectBuilder projectBuilder = new ProjectBuilder(session, project.getPluginArtifactRepositories());
-            Optional<MavenProject> pluginProjectOptional = projectBuilder.buildFromGav(
-                    pluginArtifact.getGroupId(), pluginArtifact.getArtifactId(), pluginArtifact.getBaseVersion());
-
-            if (pluginProjectOptional.isEmpty()) {
-                PluginLogManager.getLog().warn(String.format("Could not build project for plugin %s", pluginArtifact));
-                return Collections.emptySet();
-            }
-
-            var pluginProject = pluginProjectOptional.get();
 
             int declaredDeps = pluginProject.getDependencies() != null
                     ? pluginProject.getDependencies().size()
                     : 0;
             PluginLogManager.getLog()
                     .debug(String.format(
-                            "Built plugin project %s with %d declared dependencies", pluginArtifact, declaredDeps));
+                            "Built plugin project %s with %d declared dependencies",
+                            pluginProject.getArtifact(), declaredDeps));
 
             // Merge user-declared dependencies into the plugin project
             // User-declared dependencies override the plugin's default dependencies (e.g., scope changes)
@@ -351,7 +441,8 @@ public class LockFileFacade {
                     } else {
                         PluginLogManager.getLog()
                                 .debug(String.format(
-                                        "Adding user-declared dependency %s to plugin %s", key, pluginArtifact));
+                                        "Adding user-declared dependency %s to plugin %s",
+                                        key, pluginProject.getArtifact()));
                     }
                     pluginDeps.add(userDep);
                 }
@@ -359,73 +450,68 @@ public class LockFileFacade {
                 PluginLogManager.getLog()
                         .debug(String.format(
                                 "Plugin %s now has %d dependencies after merging user-declared dependencies",
-                                pluginArtifact, pluginDeps.size()));
+                                pluginProject.getArtifact(), pluginDeps.size()));
             }
-
-            // Resolve dependencies using DependencyCollectorBuilder
-            ProjectBuildingRequest dependencyBuildingRequest =
-                    new DefaultProjectBuildingRequest(session.getProjectBuildingRequest());
-            dependencyBuildingRequest.setProject(pluginProject);
-            dependencyBuildingRequest.setRemoteRepositories(project.getPluginArtifactRepositories());
 
             // Filter artifacts to "compile+runtime" scopes. Maven plugins require their runtime
             // scope dependencies to be present alongside any compile-time dependencies.
             // Test scope dependencies of plugins should be excluded.
             ArtifactFilter filter = new ScopeArtifactFilter("compile+runtime");
-            var rootNode = dependencyCollectorBuilder.collectDependencyGraph(dependencyBuildingRequest, filter);
+            DependencyGraph dependencyGraph = createDependencyGraph(
+                    pluginProject,
+                    session,
+                    repositories,
+                    dependencyCollectorBuilder,
+                    checksumCalculator,
+                    filter,
+                    false);
 
-            int rootChildren =
-                    rootNode.getChildren() != null ? rootNode.getChildren().size() : 0;
-            PluginLogManager.getLog()
-                    .debug(String.format(
-                            "Collected dependency graph for plugin %s, root node has %d children",
-                            pluginArtifact, rootChildren));
-
-            // Convert to DependencyGraph and extract root nodes
-            MutableGraph<DependencyNode> graph = GraphBuilder.directed().build();
-            rootNode.accept(new GraphBuildingNodeVisitor(graph));
-
-            PluginLogManager.getLog()
-                    .debug(String.format(
-                            "Built graph with %d nodes for plugin %s",
-                            graph.nodes().size(), pluginArtifact));
-
-            DependencyGraph dependencyGraph = DependencyGraph.of(graph, checksumCalculator, false);
+            if (config.isIncludeParentPom() || config.isIncludeBoms()) {
+                resolveParentsAndBomsForDependencies(dependencyGraph, session, pluginProject, checksumCalculator);
+            }
 
             // Get root dependency nodes (excluding the plugin project itself)
             Set<io.github.chains_project.maven_lockfile.graph.DependencyNode> roots = dependencyGraph.getRoots();
             PluginLogManager.getLog()
-                    .info(String.format("Resolved %4d dependencies for plugin %s", roots.size(), pluginArtifact));
+                    .info(String.format(
+                            "Resolved %4d dependencies for plugin %s", roots.size(), pluginProject.getArtifact()));
             return roots;
 
         } catch (Exception e) {
             PluginLogManager.getLog()
-                    .warn(String.format("Could not resolve dependencies for plugin %s", pluginArtifact), e);
+                    .warn(
+                            String.format("Could not resolve dependencies for plugin %s", pluginProject.getArtifact()),
+                            e);
             return Collections.emptySet();
         }
     }
 
-    private static DependencyGraph graph(
-            MavenSession session,
+    private static DependencyGraph createDependencyGraph(
             MavenProject project,
+            MavenSession session,
+            List<ArtifactRepository> repositories,
             DependencyCollectorBuilder dependencyCollectorBuilder,
             AbstractChecksumCalculator checksumCalculator,
+            ArtifactFilter filter,
             boolean reduced) {
         try {
             ProjectBuildingRequest buildingRequest =
                     new DefaultProjectBuildingRequest(session.getProjectBuildingRequest());
-
             buildingRequest.setProject(project);
-            var rootNode = dependencyCollectorBuilder.collectDependencyGraph(buildingRequest, null);
+            buildingRequest.setRemoteRepositories(repositories);
+
+            DependencyNode rootNode = dependencyCollectorBuilder.collectDependencyGraph(buildingRequest, filter);
 
             MutableGraph<DependencyNode> graph = GraphBuilder.directed().build();
-            rootNode.accept(new GraphBuildingNodeVisitor(graph));
+            rootNode.accept(new GraphBuildingNodeVisitor(graph, project));
+
             PluginLogManager.getLog()
                     .info(String.format(
                             "Resolved %4d dependencies for project %s",
-                            graph.nodes().size(), project));
+                            graph.nodes().size(), project.getArtifactId()));
+
             return DependencyGraph.of(graph, checksumCalculator, reduced);
-        } catch (Exception e) {
+        } catch (DependencyCollectorBuilderException e) {
             PluginLogManager.getLog().warn("Could not generate graph", e);
             return DependencyGraph.of(GraphBuilder.directed().build(), checksumCalculator, reduced);
         }
@@ -436,9 +522,11 @@ public class LockFileFacade {
      * POMs may be relative to the project being built, or are specified from an external POM.
      */
     private static Pom constructRecursivePom(
-            MavenProject initialProject, AbstractChecksumCalculator checksumCalculator) {
+            MavenProject initialProject, MavenSession session, AbstractChecksumCalculator checksumCalculator) {
         String checksumAlgorithm = checksumCalculator.getChecksumAlgorithm();
 
+        BomResolver bomResolver =
+                new BomResolver(session, initialProject.getRemoteArtifactRepositories(), checksumCalculator);
         List<MavenProject> recursiveProjects = new ArrayList<>();
         MavenProject currentProject = initialProject;
         recursiveProjects.add(currentProject);
@@ -447,22 +535,37 @@ public class LockFileFacade {
             recursiveProjects.add(currentProject);
         }
 
+        @SuppressWarnings("deprecation")
+        Path localRepoBasePath =
+                session.getRepositorySession().getLocalRepository().getBasedir().toPath();
+
         Pom lastPom = null;
         Collections.reverse(recursiveProjects);
         for (MavenProject project : recursiveProjects) {
-            String relativePath = project.getFile() == null
+            boolean cachedInLocalRepo =
+                    project.getFile() != null && project.getFile().toPath().startsWith(localRepoBasePath);
+            boolean isExternalPom = project.getFile() == null || cachedInLocalRepo;
+
+            String relativePath = isExternalPom
                     ? null
-                    : initialProject
-                            .getBasedir()
-                            .toPath()
-                            .relativize(project.getFile().toPath())
-                            .toString();
-            String checksum = null;
+                    : StreamSupport.stream(
+                                    initialProject
+                                            .getBasedir()
+                                            .toPath()
+                                            .relativize(project.getFile().toPath())
+                                            .spliterator(),
+                                    false)
+                            .map(Path::toString)
+                            .collect(Collectors.joining("/"));
+
+            String checksum;
             ResolvedUrl resolved = null;
             RepositoryId repoId = null;
-            if (project.getFile() == null) {
-                // External POM - get repository information
+            if (isExternalPom) {
+                // External POM (not in project directory) - get repository information
                 Artifact artifact = project.getArtifact();
+                // Use an explicit POM handler so getArtifactHandler().getExtension() reliably
+                // returns "pom", which is required for parsing _remote.repositories correctly.
                 Artifact pomArtifact = new DefaultArtifact(
                         artifact.getGroupId(),
                         artifact.getArtifactId(),
@@ -470,8 +573,16 @@ public class LockFileFacade {
                         artifact.getScope(),
                         "pom",
                         artifact.getClassifier(),
-                        artifact.getArtifactHandler());
-                checksum = checksumCalculator.calculateArtifactChecksum(pomArtifact);
+                        new org.apache.maven.artifact.handler.DefaultArtifactHandler("pom"));
+                if (cachedInLocalRepo) {
+                    // Pre-set the file so getArtifactResolvedField can read _remote.repositories
+                    // even if the POM-type dependency resolution fails
+                    pomArtifact.setFile(project.getFile());
+                    checksum = checksumCalculator.calculatePomChecksum(
+                            project.getFile().toPath());
+                } else {
+                    checksum = checksumCalculator.calculateArtifactChecksum(pomArtifact);
+                }
                 RepositoryInformation repoInfo = checksumCalculator.getArtifactResolvedField(pomArtifact);
                 resolved = repoInfo.getResolvedUrl();
                 repoId = repoInfo.getRepositoryId();
@@ -479,6 +590,8 @@ public class LockFileFacade {
                 checksum = checksumCalculator.calculatePomChecksum(
                         project.getFile().toPath());
             }
+
+            Set<Pom> boms = bomResolver.resolveForProject(project);
             lastPom = new Pom(
                     GroupId.of(project.getGroupId()),
                     ArtifactId.of(project.getArtifactId()),
@@ -489,28 +602,30 @@ public class LockFileFacade {
                     checksumAlgorithm,
                     checksum,
                     lastPom);
+            if (!boms.isEmpty()) {
+                lastPom.setBoms(boms);
+            }
         }
 
         return lastPom;
     }
 
     /**
-     * Resolve the BOM POMs for the current project and its dependencies.
-     * <p>
-     * Note that this function will mutate the graph nodes by adding to each one the list of resolved BOMs.
+     * Resolve the BOM POMs for the current project.
      *
-     * @param graph              The dependency graph
      * @param session            The Maven session
-     * @param project            The current Maven project
+     * @param rootProject        The current Maven project (for repository configuration)
      * @param checksumCalculator The checksum calculator
+     * @return A set of BOM POMs
      */
     private static Set<Pom> resolveBoms(
-            DependencyGraph graph,
-            MavenSession session,
-            MavenProject project,
-            AbstractChecksumCalculator checksumCalculator) {
-        BomResolver resolver = new BomResolver(session, project.getRemoteArtifactRepositories(), checksumCalculator);
-        resolver.resolveBomsForDependencies(graph);
-        return resolver.resolveForProject(project);
+            MavenSession session, MavenProject rootProject, AbstractChecksumCalculator checksumCalculator) {
+        BomResolver bomResolver =
+                new BomResolver(session, rootProject.getRemoteArtifactRepositories(), checksumCalculator);
+        return bomResolver.resolveForProject(rootProject);
+    }
+
+    private static boolean isSpecialVersion(String version) {
+        return "RELEASE".equals(version) || "LATEST".equals(version);
     }
 }

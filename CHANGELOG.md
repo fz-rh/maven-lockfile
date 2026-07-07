@@ -2574,3 +2574,76 @@ We'd like to thank the following people for their contributions:
 - Bruno Pimentel ([@brunoapimentel](https://github.com/brunoapimentel))
 - Elias Lundell ([@LogFlames](https://github.com/LogFlames))
 - LogFlames ([@LogFlames](https://github.com/LogFlames))
+
+# 5.16.0
+## Changelog
+
+## 🚀 Added
+- 5ef77f3 ✨ feat: resolve parent POMs and their BOMs (#1540)
+- 9ac76fe ✨ feat: Add Maven build extensions support to lockfile (#1529)
+
+## 📦 Dependencies
+- 34ab7ca ⬆️ (deps): Update chains-project/maven-lockfile action to v5.15.0 (#1539)
+
+## 📝 Documentation
+- 053d459 📝 docs: add Codeset-generated knowledge base for Claude Code (#1538)
+
+## 🏁 Release
+- 3ddcf33 🔖 Releasing version 5.16.0
+- 6b6e06a 🔖 Setting SNAPSHOT version 5.15.1-SNAPSHOT
+- 5aa85a8 🔖 Releasing version 5.15.0
+
+---
+- c10f984 chore: Update log4j-core version to 2.25.4 (#1554)
+
+
+## Contributors
+We'd like to thank the following people for their contributions:
+- Aman Sharma ([@algomaster99](https://github.com/algomaster99))
+- Claude Sonnet 4.6 ()
+- Elias Lundell ()
+- Timotej Kubas ()
+- fz-rh ()
+- tkubas-rh ()
+
+# 5.17.0
+## Changelog
+
+## 🚀 Features
+- 9c31785 feat: add 6 new flags for fine-grained comparison
+- af2afc1 feat: include Maven plugins by default (#1576)
+- 180bb76 feat: resolve and pin RELEASE and LATEST (#1555)
+
+## 🐛 Fixes
+- 674b1bb fix: perform validation stage wise
+- 29d0393 fix: support three-state logic for arguments (#1587)
+- 4a374a4 fix: authenticate checksum fetching from remote (#1586)
+- feb3a97 fix: override config value in lockfile with CLI args
+- c9be707 fix: use maven metadata for beta version computation (#1579)
+- f32af3b fix: normalize lockfiles for Windows (#1556)
+
+## 🔄️ Changes
+- 535f6df style: switch jreleaser changelog preset to conventional-commits (#1571)
+- acf7187 style: use boolean mojo parameters (#1577)
+- f320e85 perf: avoid sha-1 resource load for remote download verification (#1566)
+
+## 🧰 Tasks
+- fe5dd8e chore: release version 5.17.0
+- e1180d2 chore: update lockfile
+- c6c35b8 chore: update lockfile (#1570)
+- 9206c01 chore: Update maven-lockfile action to version 5.16.0 (#1559)
+
+---
+- fec11c3 🔖 Setting SNAPSHOT version 5.16.1-SNAPSHOT
+- 7501c66 🔖 Releasing version 5.16.0
+
+
+## Contributors
+We'd like to thank the following people for their contributions:
+- Aman Sharma ([@algomaster99](https://github.com/algomaster99))
+- Claude ()
+- Joe Morris ()
+- Juga Paazmaya ([@paazmaya](https://github.com/paazmaya))
+- Phung ()
+- Tim Whittington ()
+- nvphungdev ([@nvphungdev](https://github.com/nvphungdev))

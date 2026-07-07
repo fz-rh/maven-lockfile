@@ -20,9 +20,11 @@ public abstract class AbstractMavenComponent implements Comparable<AbstractMaven
     protected final VersionNumber version;
     protected final String checksum;
     protected final String checksumAlgorithm;
+    // Intentionally excluded from equals/hashCode/compareTo: mirrors differ in URL but are equivalent.
     protected final ResolvedUrl resolved;
     protected final RepositoryId repositoryId;
     protected final Set<DependencyNode> dependencies;
+    protected final Pom parentPom;
 
     protected AbstractMavenComponent(
             GroupId groupId,
@@ -32,7 +34,8 @@ public abstract class AbstractMavenComponent implements Comparable<AbstractMaven
             String checksumAlgorithm,
             ResolvedUrl resolved,
             RepositoryId repositoryId,
-            Set<DependencyNode> dependencies) {
+            Set<DependencyNode> dependencies,
+            Pom parentPom) {
         this.groupId = groupId;
         this.artifactId = artifactId;
         this.version = version;
@@ -41,6 +44,7 @@ public abstract class AbstractMavenComponent implements Comparable<AbstractMaven
         this.resolved = resolved;
         this.repositoryId = repositoryId;
         this.dependencies = dependencies == null ? Collections.emptySet() : dependencies;
+        this.parentPom = parentPom;
     }
 
     public GroupId getGroupId() {
@@ -75,10 +79,14 @@ public abstract class AbstractMavenComponent implements Comparable<AbstractMaven
         return dependencies;
     }
 
+    public Pom getParentPom() {
+        return parentPom;
+    }
+
     @Override
     public int hashCode() {
         return Objects.hash(
-                groupId, artifactId, version, checksum, checksumAlgorithm, resolved, repositoryId, dependencies);
+                groupId, artifactId, version, checksum, checksumAlgorithm, repositoryId, dependencies, parentPom);
     }
 
     @Override
@@ -97,9 +105,9 @@ public abstract class AbstractMavenComponent implements Comparable<AbstractMaven
                 && Objects.equals(version, other.version)
                 && Objects.equals(checksum, other.checksum)
                 && Objects.equals(checksumAlgorithm, other.checksumAlgorithm)
-                && Objects.equals(resolved, other.resolved)
                 && Objects.equals(repositoryId, other.repositoryId)
-                && Objects.equals(dependencies, other.dependencies);
+                && Objects.equals(dependencies, other.dependencies)
+                && Objects.equals(parentPom, other.parentPom);
     }
 
     @Override
